@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+function deploy {
+  cd ./infrastructure
+
+  terraform init -upgrade
+  terraform apply
+}
+
+function destroy {
+  cd ./infrastructure
+
+  terraform init -upgrade
+  terraform apply -destroy
+}
+
+function lint {
+  docker run \
+    --tty \
+    --volume ./infrastructure:/tf \
+    --workdir /tf \
+    bridgecrew/checkov \
+    --directory /tf
+}
+
+function manual_build {
+  imagebuilder_pipeline_name=aws-image-builder-pipeline-development
+  aws_region=eu-west-2
+
+  echo "Fetching image pipeline arn..."
+  imagepipeline_arn=$(
+    aws imagebuilder list-image-pipelines \
+      --filters "name=name,values=$imagebuilder_pipeline_name" \
+      --region "$aws_region" \
+      --no-paginate \
+      --output text \
+      --query "imagePipelineList[0].arn"
+  )
+  echo "Image Pipeline ARN - $imagepipeline_arn"
+  echo "Starting new image build..."
+
+  image_arn=$(
+    aws imagebuilder start-image-pipeline-execution \
+      --image-pipeline-arn "$imagepipeline_arn" \
+      --region "$aws_region" \
+      --no-paginate \
+      --output text \
+      --query "imageBuildVersionArn"
+  )
+  echo "Image ARN - $image_arn"
+  echo "Waiting for build to complete..."
+
+  while :; do
+    status=$(
+      aws imagebuilder get-image \
+        --image-build-version-arn "$image_arn" \
+        --region "$aws_region" \
+        --no-paginate \
+        --output text \
+        --query "image.state.status"
+    )
+    echo "Build status - $status"
+    if [[ ! $status =~ ^(PENDING|CREATING|BUILDING|TESTING|DISTRIBUTING|INTEGRATING)$ ]]; then
+      break
+    fi
+    sleep 30
+  done
+  echo "Build complete"
+}
+
+if [[ ! $(type -t "$1") == function ]]; then
+  echo "Invalid command entered"
+  exit 1
+fi
+
+TIMEFORMAT="Task completed in %3lR"
+time "${@:-default}"
